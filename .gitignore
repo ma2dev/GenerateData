@@ -4,3 +4,12 @@
 *.jar
 *.war
 *.ear
+
+# Eclipse Files #
+.project
+.classpath
+/.settings
+/bin
+/lib
+/logs/*.log
+/logs/*.zip
