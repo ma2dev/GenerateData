@@ -4,3 +4,15 @@
 *.jar
 *.war
 *.ear
+
+# Eclipse Files #
+.project
+.classpath
+.tomcatplugin
+/.settings
+/bin
+/lib
+/logs/*.log
+/logs/*.zip
+/WebContent
+/dat/*.csv
