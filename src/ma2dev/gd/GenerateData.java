@@ -43,11 +43,184 @@ public class GenerateData {
 	public static final String OUTPUT_OPTION_CHAR = "o";
 	public static final String PROPERTIES_OPTION_CHAR = "p";
 
+	/** 電話番号桁数下限値 */
+	private int lowerDigit;
+	/** 電話番号桁数上限値 */
+	private int upperDigit;
+
+	/** 契約者数 */
+	private int subscriberNum;
+	/** 通話件数 */
+	private int callInfoNum;
+
+	/** 異常切断率(%) */
+	private double reasonProbability;
+	/** サービス契約率 */
+	private double serviceProbability;
+
+	/** 最大通話時間 */
+	private long bufferTime;
+
+	public GenerateData() {
+		lowerDigit = 10;
+		upperDigit = 10;
+		subscriberNum = 10000;
+		callInfoNum = subscriberNum * 10;
+
+		reasonProbability = 0.1; // 0.1%
+		serviceProbability = 40.0; // 40.0%
+
+		bufferTime = 60 * 60 * 1000; // 1h
+	}
+
+	public boolean execute(String prefixFile, String outputDir, String propertiesFile) {
+		boolean result = true;
+
+		List<String> prefixList = null;
+		try {
+			prefixList = genPrefixList(prefixFile);
+		} catch (IOException e) {
+			log.error("genPrefixList error.\n{}", e);
+			System.out.println("プログラムは異常終了しました。");
+			System.exit(-1);
+		}
+		MyRandom random = MyRandom.getInstance();
+
+		IGenerateValue telNumber = new TelNumber(lowerDigit, upperDigit, prefixList, random);
+		SubscriberGenerator subscriberGenerator = new SubscriberGenerator(telNumber);
+		subscriberGenerator.generate(subscriberNum);
+		List<String> subscriberList = subscriberGenerator.getSubscriberList();
+
+		Date[] dateArray = null;
+		try {
+			dateArray = getTodayDate();
+		} catch (ParseException e) {
+			log.error("getTodayDate error.\n{}", e);
+			System.out.println("プログラムは異常終了しました。");
+			return false;
+		}
+		IGenerateValue dateString = new DateString(dateArray[0], dateArray[1], random);
+
+		IGenerateValue reason = new Reason(reasonProbability, random);
+
+		CallInformationGenerator callInformationGenerator = new CallInformationGenerator(subscriberList, telNumber,
+				dateString, reason, bufferTime, random);
+
+		IGenerateValue service = new Service(serviceProbability, random);
+		ServiceInformationGenerator serviceInformationGenerator = new ServiceInformationGenerator(subscriberList,
+				telNumber, service, random);
+
+		// データ生成
+		callInformationGenerator.generate(callInfoNum);
+		serviceInformationGenerator.generate();
+
+		// ファイル出力
+		try {
+			String todayStr = getTodayString();
+
+			Writer callInfoWriter = new FileWriter(outputDir + "/" + todayStr + "-call_info.csv");
+			callInformationGenerator.write(callInfoWriter);
+			callInfoWriter.write("\n");
+			callInfoWriter.close();
+
+			Writer serviceInfoWriter = new FileWriter(outputDir + "/" + todayStr + "-service_info.csv");
+			serviceInformationGenerator.write(serviceInfoWriter);
+			serviceInfoWriter.write("\n");
+			serviceInfoWriter.close();
+		} catch (ParseException e) {
+			log.error("{}", e);
+			result = false;
+		} catch (IOException e) {
+			log.error("{}", e);
+			result = false;
+		}
+
+		return result;
+	}
+
+	/**
+	 * prefix ファイルを読み込んでListに詰めます。
+	 * 
+	 * @param file
+	 *            prefixファイル
+	 * @return list
+	 * @throws IOException
+	 *             読み込み失敗
+	 */
+	private List<String> genPrefixList(String file) throws IOException {
+		Csv csv = new Csv();
+		Reader reader = new FileReader(file);
+		csv.read(reader);
+		reader.close();
+
+		List<String> list = new ArrayList<>();
+		for (int i = 0; i < csv.getRowSize(); i++) {
+			String s = (String) csv.getCell(i, 0).getData();
+			if (s == null) {
+				log.error("prefix date read error.");
+				return null;
+			}
+
+			list.add(s);
+		}
+
+		return list;
+	}
+
+	/**
+	 * 本日の00:00:00と23:59:59を返却します。
+	 * 
+	 * @return date
+	 * @throws ParseException
+	 *             パース失敗
+	 */
+	private Date[] getTodayDate() throws ParseException {
+		Calendar cal = GregorianCalendar.getInstance();
+
+		int year = cal.get(Calendar.YEAR);
+		int month = cal.get(Calendar.MONTH) + 1;
+		int day = cal.get(Calendar.DAY_OF_MONTH);
+
+		SimpleDateFormat df = new SimpleDateFormat("yyyyMMddHHmmss");
+
+		Date[] dateArray = new Date[2];
+		String s = String.format("%d%02d%02d", year, month, day);
+		dateArray[0] = df.parse(s + "000000");
+		dateArray[1] = df.parse(s + "235959");
+
+		log.debug("date base: {}", s);
+
+		return dateArray;
+	}
+
+	/**
+	 * yyyyMMddを返却します。
+	 * 
+	 * @return date
+	 * @throws ParseException
+	 *             パース失敗
+	 */
+	private String getTodayString() throws ParseException {
+		SimpleDateFormat df = new SimpleDateFormat("yyyyMMdd");
+		Date d = new Date();
+		String result = df.format(d);
+
+		log.debug("date(yyyyMMdd): {}", result);
+
+		return result;
+	}
+
 	/**
 	 * @param args
 	 *            オプションについては実行時に表示されるUsage参照。
 	 */
 	public static void main(String[] args) {
+		String msg = null;
+
+		msg = "プログラムの実行を開始します。";
+		System.out.println(msg);
+		log.info(msg);
+
 		// オプションチェック ---------------------------------------------------------
 		Options options = new Options();
 
@@ -103,10 +276,11 @@ public class GenerateData {
 			prefixFile = commandLine.getOptionValue(PREFIX_OPTION_CHAR);
 
 			File file = new File(prefixFile);
-			String result = "指定されたprefixファイルは存在しません。";
+			msg = "指定されたprefixファイルは存在しません。";
 			if (file.exists() == false || file.isFile() == false) {
 				// ファイル無し
-				System.err.println(result);
+				System.err.println(msg);
+				log.error(msg);
 				return;
 			}
 		}
@@ -118,10 +292,11 @@ public class GenerateData {
 			outputDir = commandLine.getOptionValue(OUTPUT_OPTION_CHAR);
 
 			File file = new File(outputDir);
-			String result = "指定されたディレクトリは存在しません。";
+			msg = "指定されたディレクトリは存在しません。";
 			if (file.exists() == false || file.isDirectory() == false) {
 				// ディレクトリ無し
-				System.err.println(result);
+				System.err.println(msg);
+				log.error(msg);
 				return;
 			}
 		}
@@ -133,89 +308,27 @@ public class GenerateData {
 			propertiesFile = commandLine.getOptionValue(PROPERTIES_OPTION_CHAR);
 
 			File file = new File(propertiesFile);
-			String result = "指定されたプロパティファイルは存在しません。";
+			msg = "指定されたプロパティファイルは存在しません。";
 			if (file.exists() == false || file.isFile() == false) {
 				// ファイル無し
-				System.err.println(result);
+				System.err.println(msg);
+				log.error(msg);
 				return;
 			}
 		}
 
 		// main --------------------------------------------------------------
-		boolean result = true;
-
-		int lowerDigit = 10;
-		int upperDigit = 10;
-
-		int subscriberNum = 10000; // 契約者数
-		int callInfoNum = subscriberNum * 10; // 通話件数
-
-		double reasonProbability = 0.1;
-		long bufferTime = 60 * 60 * 1000; // 平均通話時間を1時間と想定
-
-		double serviceProbability = 40.0; // サービス契約率40%と想定
-
-		List<String> prefixList = null;
-		try {
-			prefixList = genPrefixList(prefixFile);
-		} catch (IOException e) {
-			log.error("genPrefixList error.\n{}", e);
-			System.out.println("プログラムは異常終了しました。");
-			System.exit(-1);
-		}
-		MyRandom random = MyRandom.getInstance();
-
-		IGenerateValue telNumber = new TelNumber(lowerDigit, upperDigit, prefixList, random);
-		SubscriberGenerator subscriberGenerator = new SubscriberGenerator(telNumber);
-		subscriberGenerator.generate(subscriberNum);
-		List<String> subscriberList = subscriberGenerator.getSubscriberList();
-
-		Date[] dateArray = null;
-		try {
-			dateArray = getTodayDate();
-		} catch (ParseException e) {
-			log.error("getTodayDate error.\n{}", e);
-			System.out.println("プログラムは異常終了しました。");
-			System.exit(-1);
-		}
-		IGenerateValue dateString = new DateString(dateArray[0], dateArray[1], random);
-
-		IGenerateValue reason = new Reason(reasonProbability, random);
-
-		CallInformationGenerator callInformationGenerator = new CallInformationGenerator(subscriberList, telNumber,
-				dateString, reason, bufferTime, random);
-
-		IGenerateValue service = new Service(serviceProbability, random);
-		ServiceInformationGenerator serviceInformationGenerator = new ServiceInformationGenerator(subscriberList,
-				telNumber, service, random);
-
-		// データ生成
-		callInformationGenerator.generate(callInfoNum);
-		serviceInformationGenerator.generate();
-
-		// ファイル出力
-		try {
-			String todayStr = getTodayString();
-
-			Writer callInfoWriter = new FileWriter(outputDir + "/" + todayStr + "-call_info.csv");
-			callInformationGenerator.write(callInfoWriter);
-			callInfoWriter.close();
-
-			Writer serviceInfoWriter = new FileWriter(outputDir + "/" + todayStr + "-service_info.csv");
-			serviceInformationGenerator.write(serviceInfoWriter);
-			serviceInfoWriter.close();
-		} catch (ParseException e) {
-			log.error("{}", e);
-			result = false;
-		} catch (IOException e) {
-			log.error("{}", e);
-			result = false;
-		}
+		GenerateData generateData = new GenerateData();
+		boolean result = generateData.execute(prefixFile, outputDir, propertiesFile);
 
 		if (result == true) {
-			System.out.println("プログラムは正常終了しました。");
+			msg = "プログラムは正常終了しました。";
+			System.out.println(msg);
+			log.info(msg);
 		} else {
-			System.out.println("プログラムは異常終了しました。");
+			msg = "プログラムは異常終了しました。";
+			System.out.println(msg);
+			log.error(msg);
 		}
 	}
 
@@ -229,77 +342,5 @@ public class GenerateData {
 		HelpFormatter help = new HelpFormatter();
 		// ヘルプを出力
 		help.printHelp("GenerateData", options, true);
-	}
-
-	/**
-	 * prefix ファイルを読み込んでListに詰めます。
-	 * 
-	 * @param file
-	 *            prefixファイル
-	 * @return list
-	 * @throws IOException
-	 *             読み込み失敗
-	 */
-	private static List<String> genPrefixList(String file) throws IOException {
-		Csv csv = new Csv();
-		Reader reader = new FileReader(file);
-		csv.read(reader);
-		reader.close();
-
-		List<String> list = new ArrayList<>();
-		for (int i = 0; i < csv.getRowSize(); i++) {
-			String s = (String) csv.getCell(i, 0).getData();
-			if (s == null) {
-				log.error("prefix date read error.");
-				return null;
-			}
-
-			list.add(s);
-		}
-
-		return list;
-	}
-
-	/**
-	 * 本日の00:00:00と23:59:59を返却します。
-	 * 
-	 * @return date
-	 * @throws ParseException
-	 *             パース失敗
-	 */
-	private static Date[] getTodayDate() throws ParseException {
-		Calendar cal = GregorianCalendar.getInstance();
-
-		int year = cal.get(Calendar.YEAR);
-		int month = cal.get(Calendar.MONTH) + 1;
-		int day = cal.get(Calendar.DAY_OF_MONTH);
-
-		SimpleDateFormat df = new SimpleDateFormat("yyyyMMddHHmmss");
-
-		Date[] dateArray = new Date[2];
-		String s = String.format("%d%02d%02d", year, month, day);
-		dateArray[0] = df.parse(s + "000000");
-		dateArray[1] = df.parse(s + "235959");
-
-		log.debug("date base: {}", s);
-
-		return dateArray;
-	}
-
-	/**
-	 * yyyyMMddを返却します。
-	 * 
-	 * @return date
-	 * @throws ParseException
-	 *             パース失敗
-	 */
-	private static String getTodayString() throws ParseException {
-		SimpleDateFormat df = new SimpleDateFormat("yyyyMMdd");
-		Date d = new Date();
-		String result = df.format(d);
-
-		log.debug("date(yyyyMMdd): {}", result);
-
-		return result;
 	}
 }
